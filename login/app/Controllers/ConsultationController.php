@@ -1,0 +1,38 @@
+<?php declare(strict_types=1); namespace Palmed\Controllers; use Palmed\Core\Auth; use Palmed\Core\Audit; use Palmed\Core\Database; use Palmed\Models\Consultation; use Palmed\Models\Patient; class ConsultationController { public function create(array $params = []): void { Auth::requirePermission('consultations.manage'); $patientId = (int) ($params['patient_id'] ?? $_GET['patient_id'] ?? 0); $patient = $patientId ? Patient::find($patientId) : null; $specialties = $this->getSpecialties(); $physicianSpecialties = $this->getPhysicianSpecialties(Auth::id()); view('consultations.form', [ 'consultation' => null, 'patient' => $patient, 'diagnoses' => [], 'specialties' => $specialties, 'physicianSpecialties' => $physicianSpecialties, 'action' => 'create', ]); } public function store(): void { Auth::requirePermission('consultations.manage'); if (!verify_csrf($_POST['csrf_token'] ?? '')) { json_response(['success' => false, 'message' => __t('auth.invalid_token')], 403); } $data = $this->extractConsultationData($_POST); $data['physician_id'] = Auth::id(); $data['created_by'] = Auth::id(); $data['updated_by'] = Auth::id(); if (empty($data['patient_id'])) { if (!empty($_SERVER['HTTP_X_REQUESTED_WITH'])) { json_response(['success' => false, 'message' => __t('consultations.patient_required')]); } set_flash('error', __t('consultations.patient_required')); redirect('consultations/create'); } $id = Consultation::create($data); $this->saveDiagnosesFromPost($id, $_POST); Audit::log('consultation_create', 'consultation', $id, 'Consultation created'); if (!empty($_SERVER['HTTP_X_REQUESTED_WITH'])) { json_response(['success' => true, 'id' => $id, 'message' => __t('consultations.saved')]); } set_flash('success', __t('consultations.saved')); redirect('consultations/' . $id); }
+public function show(array $params): void
+{
+    Auth::requirePermission('consultations.view');
+
+    $consultation = Consultation::find((int) $params['id']);
+
+    if (!$consultation) {
+        set_flash('error', __t('consultations.not_found'));
+        redirect('dashboard');
+    }
+
+    view('consultations.show', [
+        'consultation' => $consultation,
+        'diagnoses' => Consultation::getDiagnoses((int) $consultation['id']),
+    ]);
+}
+
+public function print(array $params): void
+{
+    Auth::requirePermission('consultations.view');
+
+    $consultation = Consultation::find((int) $params['id']);
+
+    if (!$consultation) {
+        set_flash('error', __t('consultations.not_found'));
+        redirect('dashboard');
+    }
+
+    view('consultations.print', [
+        'consultation' => $consultation,
+        'diagnoses' => Consultation::getDiagnoses((int) $consultation['id']),
+    ]);
+
+}
+
+public function edit(array $params): void
+ { Auth::requirePermission('consultations.manage'); $consultation = Consultation::find((int) $params['id']); if (!$consultation) { set_flash('error', __t('consultations.not_found')); redirect('dashboard'); } $patient = Patient::find((int) $consultation['patient_id']); view('consultations.form', [ 'consultation' => $consultation, 'patient' => $patient, 'diagnoses' => Consultation::getDiagnoses((int) $consultation['id']), 'specialties' => $this->getSpecialties(), 'physicianSpecialties' => $this->getPhysicianSpecialties(Auth::id()), 'action' => 'edit', ]); } public function update(array $params): void { Auth::requirePermission('consultations.manage'); if (!verify_csrf($_POST['csrf_token'] ?? '')) { json_response(['success' => false, 'message' => __t('auth.invalid_token')], 403); } $id = (int) $params['id']; $consultation = Consultation::find($id); if (!$consultation) { json_response(['success' => false, 'message' => __t('consultations.not_found')], 404); } $data = $this->extractConsultationData($_POST); $data['updated_by'] = Auth::id(); Consultation::update($id, $data); $this->saveDiagnosesFromPost($id, $_POST); Audit::log('consultation_update', 'consultation', $id, 'Consultation updated'); if (!empty($_SERVER['HTTP_X_REQUESTED_WITH'])) { json_response(['success' => true, 'id' => $id, 'message' => __t('consultations.saved')]); } set_flash('success', __t('consultations.saved')); redirect('consultations/' . $id); } public function searchIcd10(): void { Auth::requirePermission('consultations.manage'); $query = trim($_GET['q'] ?? ''); if (strlen($query) < 2) { json_response(['results' => []]); } $lang = $_SESSION['language'] ?? 'es'; $results = Consultation::searchIcd10($query, $lang); json_response(['results' => $results]); } private function extractConsultationData(array $input): array { return [ 'patient_id' => (int) ($input['patient_id'] ?? 0), 'appointment_id' => !empty($input['appointment_id']) ? (int) $input['appointment_id'] : null, 'specialty_id' => !empty($input['specialty_id']) ? (int) $input['specialty_id'] : null, 'status' => $input['status'] ?? 'draft', 'reason_for_consultation' => trim($input['reason_for_consultation'] ?? ''), 'current_illness' => trim($input['current_illness'] ?? ''), 'past_medical_history' => trim($input['past_medical_history'] ?? ''), 'surgical_history' => trim($input['surgical_history'] ?? ''), 'family_history' => trim($input['family_history'] ?? ''), 'allergies' => trim($input['allergies'] ?? ''), 'current_medications' => trim($input['current_medications'] ?? ''), 'blood_pressure_systolic' => $input['blood_pressure_systolic'] ?? null, 'blood_pressure_diastolic' => $input['blood_pressure_diastolic'] ?? null, 'heart_rate' => $input['heart_rate'] ?? null, 'respiratory_rate' => $input['respiratory_rate'] ?? null, 'temperature' => $input['temperature'] ?? null, 'weight' => $input['weight'] ?? null, 'height' => $input['height'] ?? null, 'physical_examination' => trim($input['physical_examination'] ?? ''), 'assessment' => trim($input['assessment'] ?? ''), 'management_plan' => trim($input['management_plan'] ?? ''), 'medications_prescribed' => trim($input['medications_prescribed'] ?? ''), 'medical_orders' => trim($input['medical_orders'] ?? ''), 'recommendations' => trim($input['recommendations'] ?? ''), 'follow_up_plan' => trim($input['follow_up_plan'] ?? ''), 'medical_leave_days' => $input['medical_leave_days'] ?? null, 'medical_leave_from' => $input['medical_leave_from'] ?? null, 'medical_leave_to' => $input['medical_leave_to'] ?? null, 'medical_leave_reason' => trim($input['medical_leave_reason'] ?? ''), 'digital_signature' => $input['digital_signature'] ?? null, ]; } private function saveDiagnosesFromPost(int $consultationId, array $post): void { $diagnoses = []; $descriptions = $post['diagnosis_description'] ?? []; $codes = $post['diagnosis_code'] ?? []; $icd10Ids = $post['diagnosis_icd10_id'] ?? []; $primary = (int) ($post['diagnosis_primary'] ?? 0); if (!is_array($descriptions)) { return; } foreach ($descriptions as $i => $desc) { $desc = trim($desc); if ($desc === '') { continue; } $diagnoses[] = [ 'description' => $desc, 'icd10_code' => $codes[$i] ?? null, 'icd10_id' => !empty($icd10Ids[$i]) ? (int) $icd10Ids[$i] : null, 'is_primary' => ($i === $primary), ]; } Consultation::saveDiagnoses($consultationId, $diagnoses); } private function getSpecialties(): array { $db = Database::getInstance(); return $db->query('SELECT * FROM specialties WHERE is_active = 1 ORDER BY name')->fetchAll(); } private function getPhysicianSpecialties(?int $userId): array { if (!$userId) { return []; } $db = Database::getInstance(); $stmt = $db->prepare( 'SELECT s.* FROM specialties s JOIN user_specialties us ON us.specialty_id = s.id WHERE us.user_id = ? AND s.is_active = 1' ); $stmt->execute([$userId]); return $stmt->fetchAll(); } }
